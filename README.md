@@ -2,7 +2,9 @@
 
 Top-down arcade football in the browser. No build step and no dependencies.
 
-**Play:** open `index.html` in a browser (`xdg-open index.html`).
+**Play online:** https://chayotesudado.github.io/linafa27/
+
+To play locally, open `index.html` in a browser (`xdg-open index.html`).
 
 ## Controls
 | | Player 1 | Player 2 |
