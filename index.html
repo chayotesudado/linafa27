@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linafa 27</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" tabindex="0"></canvas>
+  <div id="crt"></div>
+
+  <div id="pause" class="overlay hidden">
+    <h2>PAUSED</h2>
+    <p>Esc — resume &nbsp;·&nbsp; Q — quit to menu &nbsp;·&nbsp; M — sound &nbsp;·&nbsp; C — scanlines</p>
+  </div>
+
+  <div id="menu" class="overlay">
+    <canvas id="logo" width="400" height="64"></canvas>
+    <div class="form">
+      <label for="home">Home</label><select id="home"></select>
+      <label for="away">Away</label><select id="away"></select>
+      <label for="p2">Away played by</label>
+      <select id="p2"><option value="cpu">CPU</option><option value="p2">Player 2</option></select>
+      <label for="diff">Difficulty</label>
+      <select id="diff">
+        <option value="easy">Easy</option><option value="normal" selected>Normal</option><option value="hard">Hard</option>
+      </select>
+      <label for="len">Half length</label>
+      <select id="len">
+        <option value="2">2 min</option><option value="3" selected>3 min</option>
+        <option value="5">5 min</option><option value="10">10 min</option>
+      </select>
+    </div>
+    <button id="start">KICK OFF</button>
+    <div id="result"></div>
+    <div id="sndhint" class="off">&#9834; click or press any key for sound &#9834;</div>
+    <div class="help">
+      <p><b>P1</b> arrows + Space &nbsp; <b>P2</b> WASD + Left Shift &nbsp; (gamepads work too)</p>
+      <p><b>With the ball:</b> tap fire = pass · hold fire = shoot (longer = harder)</p>
+      <p><b>Aftertouch:</b> just after kicking, push sideways to bend it, back to lift it, forward to keep it low</p>
+      <p><b>Without the ball:</b> fire = slide tackle, or jump for a header when the ball is in the air</p>
+      <p>Esc pause · M mute · C scanlines · edit <code>teams.js</code> to change squads</p>
+    </div>
+  </div>
+</div>
+<script src="teams.js"></script>
+<script src="sim.js"></script>
+<script src="sprites.js"></script>
+<script src="render.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
