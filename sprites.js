@@ -805,24 +805,37 @@ function drawGrid(g, p, k, lk, pose, f, sec, face) {
 
 // ---------- atlases ----------
 // Sprites are drawn on small software canvases (cheap per-pixel work and pixel reads), then packed
-// into one big atlas per sprite type, so the GPU draws a frame from two textures instead of hundreds.
+// into atlas pages. Pages are kept small (~512px): Firefox re-uploads a whole canvas texture whenever it
+// changes, so adding a sprite mid-match must only dirty a small page, not one huge atlas.
+// When every page is full, the oldest page is cleared and reused; sprites on it are redrawn on demand.
 function scratch(w, h) {
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   return { c, g: c.getContext('2d', { willReadFrequently: true }) };
 }
-function Atlas(w, h, cw, ch) {
-  this.c = document.createElement('canvas'); this.c.width = w; this.c.height = h;
-  this.g = this.c.getContext('2d');
-  this.cw = cw; this.ch = ch; this.cols = Math.floor(w / cw); this.n = this.cols * Math.floor(h / ch);
-  this.next = 0; this.gen = 0;
+const PAGE = 512;
+function Atlas(capacity, cw, ch) {
+  this.cw = cw; this.ch = ch;
+  this.cols = Math.floor(PAGE / cw); this.rows = Math.floor(PAGE / ch); this.per = this.cols * this.rows;
+  this.maxPages = Math.ceil(capacity / this.per);
+  this.pages = []; this.cur = -1; this.next = this.per;
 }
 Atlas.prototype.put = function (src) {
-  if (this.next >= this.n) { this.next = 0; this.gen++; this.g.clearRect(0, 0, this.c.width, this.c.height); }
-  const i = this.next++, x = (i % this.cols) * this.cw, y = Math.floor(i / this.cols) * this.ch;
-  this.g.drawImage(src, x, y);
-  return { img: this.c, sx: x, sy: y, gen: this.gen };
+  if (this.next >= this.per) {   // move on to a fresh page, or recycle the oldest once all exist
+    this.cur = (this.cur + 1) % this.maxPages; this.next = 0;
+    let pg = this.pages[this.cur];
+    if (!pg) {
+      const c = document.createElement('canvas'); c.width = this.cols * this.cw; c.height = this.rows * this.ch;
+      pg = this.pages[this.cur] = { c, g: c.getContext('2d'), gen: 0 };
+    } else { pg.gen++; pg.g.clearRect(0, 0, pg.c.width, pg.c.height); }
+  }
+  const pg = this.pages[this.cur], i = this.next++;
+  const x = (i % this.cols) * this.cw, y = Math.floor(i / this.cols) * this.ch;
+  pg.g.drawImage(src, x, y);
+  return { img: pg.c, sx: x, sy: y, page: pg, gen: pg.gen };
 };
-const playerAtlas = new Atlas(4096, 2048, SPR, SPR);
+// still on its page? (false once that page has been recycled)
+const live = e => e.gen === e.page.gen;
+const playerAtlas = new Atlas(3570, SPR, SPR);
 const playerScratch = scratch(SPR, SPR);
 
 // Low sun from the upper left: brighten each sprite's lit edge (left side, and tops of heads and
@@ -895,7 +908,7 @@ function playerSprite(p, pose, f, sec, extra, shadowed) {
   let m = cache.get(p); if (!m) { m = new Map(); cache.set(p, m); }
   const key = pose + '|' + f + '|' + sec + '|' + (extra || 0) + (shadowed ? '|s' : '');
   let e = m.get(key);
-  if (!e || e.gen !== playerAtlas.gen) {
+  if (!e || !live(e)) {
     const { c, g } = playerScratch;
     g.clearRect(0, 0, SPR, SPR);
     const k = kitFor(p), lk = looks(p);
@@ -917,12 +930,12 @@ function playerSprite(p, pose, f, sec, extra, shadowed) {
 const FW = 18, FH = 25, FX = 9, FY = 23;          // native canvas; (FX, FY) is the seat/feet point
 const FAN_HAIR_STYLES = ['short', 'crop', 'long', 'none', 'bald patch', 'mullet'];
 const fanCache = new Map();
-const fanAtlas = new Atlas(2048, 2048, FW, FH);
+const fanAtlas = new Atlas(9153, FW, FH);   // same capacity as the old single 2048x2048 atlas
 const fanScratch = scratch(FW, FH);
 // returns the atlas slot, or null when it isn't drawn yet and the caller is out of budget
 function fanSlot(look, state, f, mayCreate) {
   const e = fanCache.get(look.key + state + f);
-  if (e && e.gen === fanAtlas.gen) return e;
+  if (e && live(e)) return e;
   if (!mayCreate) return null;
   return fanSprite(look, state, f);
 }
