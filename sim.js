@@ -70,7 +70,7 @@ const STYLE_BASE = {
   label: 'BALANCED',
   // shape
   line: 0,          // back-line height out of possession: <0 sits deep, >0 squeezes up
-  block: 0.64,      // vertical gap between the lines of the defensive block (small = compact)
+  block: 0.64,      // vertical gap between the lines of the defensive block (small = compact; scaled up 1.5x in defendZone)
   compact: 0.82,    // horizontal spread of the block (small = narrow, guards the middle)
   shift: 0.34,      // how far the block slides across to the ball side
   fwdHigh: 0,       // forwards who stay up the pitch when defending (the counter threat)
@@ -82,7 +82,7 @@ const STYLE_BASE = {
   depth: 0,         // in possession: whole shape pushes up
   overlap: 0,       // in possession: defenders bomb on
   restD: 0.3,       // in possession: defenders stay goal-side of forwards left up the pitch (stops counters)
-  spacing: 36,      // how hard team-mates avoid sharing space (positional play keeps lanes)
+  spacing: 36,      // how hard team-mates avoid sharing space (positional play keeps lanes; scaled 1.3x in findSpace)
   supR: 70,         // distance of the support triangle around the carrier
   // pressing
   pressZone: 0.55,  // the nearest man closes the carrier down when the ball is below this fy; otherwise he jockeys
@@ -306,7 +306,7 @@ function homePos(p) {
   const [hx, hy] = t.form[p.idx];
   const bl = toLocal(t, bx, by);
   const att = possTeam() === t, s = sty(t);
-  let fy = hy * 0.6 + bl.fy * 0.5 - 0.05 + (att ? 0.08 + s.depth : -0.04 + s.line);
+  let fy = 0.452 + (hy - 0.42) * 0.9 + (bl.fy - 0.5) * 0.3 + (att ? 0.08 + s.depth : -0.04 + s.line);
   let fx = hx + (bl.fx - 0.5) * 0.35 + Math.sin(G.clock * 0.7 + p.idx * 1.9) * 0.015;
   if (!att && p.role === 'DF') fy = Math.min(fy, bl.fy - 0.03);
   if (!att && highFw(p)) fy = Math.max(fy, 0.5);
@@ -352,7 +352,7 @@ function slotPt(t, c, sl) {
 }
 // best spot near `ideal` for receiving: room from opponents, a clear lane from the ball, not crowding team-mates
 function findSpace(p, ideal, from, radius, laneW) {
-  const t = p.team, sp = sty(t).spacing;
+  const t = p.team, sp = sty(t).spacing * 1.3;
   let best = ideal, bs = -1e9;
   const cands = [];
   for (let r = 0; r <= radius; r += radius / 2) for (let k = 0; k < (r ? 8 : 1); k++) {
@@ -381,7 +381,7 @@ function attackSpot(p) {
   // relational play leaves one man wide on the far side for the switch
   const far = s.farOutlet && p.role === 'FW' && (hx - 0.5) * (bl.fx - 0.5) < 0 && Math.abs(hx - 0.5) > 0.2;
   const wid = far ? Math.max(s.width, 1.6) : s.width, pull = far ? 0 : s.ballPull;
-  let fy = hy * 0.72 + bl.fy * 0.45 + 0.02 + s.depth + (p.role === 'DF' ? s.overlap : 0) + (ctr && p.role !== 'DF' ? 0.08 : 0);
+  let fy = 0.5045 + (hy - 0.42) * 1.08 + (bl.fy - 0.5) * 0.27 + s.depth + (p.role === 'DF' ? s.overlap : 0) + (ctr && p.role !== 'DF' ? 0.08 : 0);
   const bw = toWorld(t, clamp(0.5 + (hx - 0.5) * wid + (bl.fx - 0.5) * pull, 0.05, 0.95), clamp(fy, 0.06, 0.9));
   let base = { x: bw.x, y: bw.y };
   if (s.gather && !far && p.role !== 'DF') base = lerpPt(base, b, s.gather);
@@ -432,8 +432,8 @@ function assignMen(t) {
 // the compact block: between the ball and our goal, squeezed toward the ball side
 function defendZone(p) {
   const t = p.team, b = G.ball, [hx, hy] = t.form[p.idx], bl = toLocal(t, b.x, b.y), s = sty(t);
-  const mid = clamp(bl.fy - 0.12 + s.line, 0.14 + Math.min(0, s.line) * 0.3, 0.6 + s.line * 2.5);
-  let fy = mid + (hy - 0.42) * s.block;
+  const mid = clamp(0.38 + (bl.fy - 0.5) * 0.7 + s.line, 0.14 + Math.min(0, s.line) * 0.3, 0.6 + s.line * 2.5);
+  let fy = mid + (hy - 0.42) * s.block * 1.5;
   if (p.role === 'DF') fy = Math.min(fy, bl.fy - 0.04);
   let fx = 0.5 + (hx - 0.5) * s.compact + (bl.fx - 0.5) * s.shift;
   if (highFw(p)) { fy = Math.max(fy, 0.52); fx = 0.5 + (hx - 0.5) * 0.7; }   // the out-ball: kept up, saving his legs
@@ -874,7 +874,7 @@ function computeRoles() {
     let n = bl < s.press2Zone ? s.pressers : 0;
     if (cp) n = Math.max(n, s.cpress - 1);
     n = Math.round(n * fat);
-    const reach = cp ? 110 : 85;
+    const reach = cp ? 120 : 100;   // the shape is spread out, so the second man comes from a bit further
     for (const a of arr) {
       if (t.press.length >= n) break;
       if (a.p !== t.chaser && a.p !== t.helper && a.d < reach && !(t.human && a.p === t.human.player)) t.press.push(a.p);
