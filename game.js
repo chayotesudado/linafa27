@@ -36,7 +36,8 @@ function render(el) {
 
 // ---------- input ----------
 const keys = new Set();
-const GAME_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft'];
+const GAME_KEYS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft',
+  'KeyI', 'KeyJ', 'KeyK', 'KeyL', 'KeyQ', 'KeyE'];
 addEventListener('keydown', e => {
   if (!running) { menuMusic(); if (e.code === 'KeyM' && e.target.tagName !== 'SELECT') Snd.toggle(); return; }
   if (GAME_KEYS.includes(e.code)) e.preventDefault();
@@ -45,7 +46,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyM') Snd.toggle();
   if (e.code === 'KeyC') toggleCrt();
   if (e.code === 'Backquote') showFps = !showFps;
-  if (e.code === 'KeyQ' && paused) quitToMenu();
+  if (e.code === 'KeyQ' && paused) quitToMenu();   // (Q is switch player in play; it only quits from the pause screen)
 });
 addEventListener('keyup', e => keys.delete(e.code));
 // The menu music tries to start straight away. Most browsers block sound until the page has had a click or
@@ -71,25 +72,91 @@ const stored = k => localStorage.getItem('linafa27.' + k) ?? localStorage.getIte
 toggleCrt((() => { try { return stored('crt') !== '0'; } catch (e) { return true; } })());
 addEventListener('blur', () => keys.clear());
 
+// Controller first. Pad 1 plays for P1 and pad 2 for P2. The keyboard is one more controller: it plays for the
+// first player without a pad (P2 once a pad is plugged in, P1 otherwise), and joins in for P1 in a one-player game.
+// Standard gamepad mapping: 0 Cross/A, 1 Circle/B, 2 Square/X, 3 Triangle/Y, 4 L1/LB, 5 R1/RB, 6 L2/LT, 7 R2/RT,
+// 8 Share/Back, 9 Options/Start, 12-15 d-pad. Keyboard: WASD (or arrows) to move, IJKL laid out like the pad's buttons.
+const PAD_MAP = { pass: [0], shoot: [1], lob: [2], thru: [3], sw: [4], press: [5], sprint: [7, 6] };
+const KEY_MAP = { pass: ['KeyK'], shoot: ['KeyL'], lob: ['KeyJ'], thru: ['KeyI'], sw: ['KeyQ'], press: ['KeyE'], sprint: ['ShiftLeft', 'Space'] };
+const ACTIONS = Object.keys(PAD_MAP);
+const padBtn = (pad, i) => { const b = pad.buttons[i]; return !!b && (b.pressed || b.value > 0.4); };
+const getPads = () => (navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(p => p && p.connected !== false) : []);
+
 function padInput(pad) {
-  const o = { dx: 0, dy: 0, fire: false };
+  const o = { dx: 0, dy: 0 };
   if (!pad) return o;
   const ax = pad.axes[0] || 0, ay = pad.axes[1] || 0;
   if (Math.hypot(ax, ay) > 0.35) { o.dx = ax; o.dy = ay; }
-  const B = i => pad.buttons[i] && pad.buttons[i].pressed;
-  if (B(12)) o.dy = -1; if (B(13)) o.dy = 1; if (B(14)) o.dx = -1; if (B(15)) o.dx = 1;
-  o.fire = B(0) || B(1) || B(2) || B(3);
+  if (padBtn(pad, 12)) o.dy = -1; if (padBtn(pad, 13)) o.dy = 1; if (padBtn(pad, 14)) o.dx = -1; if (padBtn(pad, 15)) o.dx = 1;
+  for (const a of ACTIONS) o[a] = PAD_MAP[a].some(i => padBtn(pad, i));
+  return o;
+}
+function keyInput() {
+  const k = c => (keys.has(c) ? 1 : 0);
+  const o = { dx: (k('KeyD') || k('ArrowRight')) - (k('KeyA') || k('ArrowLeft')), dy: (k('KeyS') || k('ArrowDown')) - (k('KeyW') || k('ArrowUp')) };
+  for (const a of ACTIONS) o[a] = KEY_MAP[a].some(c => keys.has(c));
   return o;
 }
 function merge(a, b) {
-  return { dx: a.dx || b.dx, dy: a.dy || b.dy, fire: a.fire || b.fire };
+  const o = { dx: a.dx || b.dx, dy: a.dy || b.dy };
+  for (const k of ACTIONS) o[k] = !!(a[k] || b[k]);
+  return o;
 }
+let inputGate = false;   // set at kick-off: ignore buttons still held from the menu until they're let go
 function readInputs() {
-  const k = c => (keys.has(c) ? 1 : 0);
-  const p1 = { dx: k('ArrowRight') - k('ArrowLeft'), dy: k('ArrowDown') - k('ArrowUp'), fire: !!(k('Space') || k('ControlRight') || k('Slash')) };
-  const p2 = { dx: k('KeyD') - k('KeyA'), dy: k('KeyS') - k('KeyW'), fire: !!(k('ShiftLeft') || k('KeyF')) };
-  const pads = navigator.getGamepads ? Array.from(navigator.getGamepads()).filter(Boolean) : [];
-  return { p1: merge(p1, padInput(pads[0])), p2: merge(p2, padInput(pads[1])) };
+  const pads = getPads(), two = S.G && S.G.humans.length > 1;
+  if (inputGate) {
+    if (pads.some(p => p.buttons.some((b, i) => padBtn(p, i))) || [...keys].some(c => ACTIONS.some(a => KEY_MAP[a].includes(c)))) return {};
+    inputGate = false;
+  }
+  const out = { p1: padInput(pads[0]), p2: padInput(pads[1]) };
+  const kb = !two ? 'p1' : pads[0] ? 'p2' : 'p1';
+  out[kb] = merge(out[kb], keyInput());
+  return out;
+}
+
+// Start/Options pauses, Share/Back quits from the pause screen; in the menu the d-pad or stick moves between
+// the options (left/right changes one) and Cross/A or Start kicks off.
+const padPrev = new Map();
+let navDir = null, navT = 0;
+function pollPads(el) {
+  const pads = getPads(), edge = i => pads.some(p => { const pr = padPrev.get(p.index) || []; return padBtn(p, i) && !pr[i]; });
+  const start = edge(9), back = edge(8), cross = edge(0);
+  let dir = null;
+  for (const p of pads) {
+    const ax = p.axes[0] || 0, ay = p.axes[1] || 0;
+    if (padBtn(p, 12) || ay < -0.6) dir = 'up'; else if (padBtn(p, 13) || ay > 0.6) dir = 'down';
+    else if (padBtn(p, 14) || ax < -0.6) dir = 'left'; else if (padBtn(p, 15) || ax > 0.6) dir = 'right';
+    if (dir) break;
+  }
+  for (const p of pads) padPrev.set(p.index, p.buttons.map((b, i) => padBtn(p, i)));
+  let nav = null;   // held directions repeat after a short delay
+  if (dir !== navDir) { navDir = dir; navT = 0.4; nav = dir; } else if (dir && (navT -= el) <= 0) { navT = 0.13; nav = dir; }
+  if (running) {
+    if (start) togglePause();
+    if (paused && back) quitToMenu();
+    return;
+  }
+  if (start) { startMatch(); return; }
+  const ids = ['home', 'away', 'p2', 'diff', 'len', 'start'];
+  let i = ids.indexOf(document.activeElement && document.activeElement.id); if (i < 0) i = ids.length - 1;
+  if (cross) { if (ids[i] === 'start') startMatch(); else $(ids[i + 1]).focus(); return; }
+  if (nav === 'up' || nav === 'down') $(ids[clamp(i + (nav === 'up' ? -1 : 1), 0, ids.length - 1)]).focus();
+  else if (nav && ids[i] !== 'start') {
+    const sel = $(ids[i]);
+    sel.selectedIndex = clamp(sel.selectedIndex + (nav === 'left' ? -1 : 1), 0, sel.options.length - 1);
+    sel.dispatchEvent(new Event('change'));
+  }
+  if (nav) menuMusic();
+}
+// which controller plays for whom, shown in the menu
+function padInfo() {
+  const n = getPads().length, two = $('p2').value === 'p2';
+  const t = !two ? (n ? 'P1: controller (keyboard works too)' : 'P1: keyboard — plug in a controller to play with one')
+    : n >= 2 ? 'P1: controller 1 · P2: controller 2 (or keyboard)' : n === 1 ? 'P1: controller · P2: keyboard'
+    : 'Two players need at least one controller (P2 can use the keyboard)';
+  const odd = getPads().some(p => p.mapping !== 'standard') ? ' · controller layout not recognised: buttons may be mixed up' : '';
+  const el = $('padinfo'); if (el.textContent !== t + odd) el.textContent = t + odd;
 }
 
 // ---------- sound (all synthesised) ----------
@@ -445,7 +512,7 @@ function startMatch() {
   try { localStorage.setItem('linafa27.menu', JSON.stringify(MENU_IDS.map(id => $(id).value))); } catch (e) {}
   R.resetCam();
   $('menu').classList.add('hidden'); $('pause').classList.add('hidden');
-  running = true; demo = false; paused = false; acc = 0; keys.clear();
+  running = true; demo = false; paused = false; acc = 0; keys.clear(); inputGate = true;
   cv.focus();
 }
 
@@ -486,6 +553,8 @@ const logo = $('logo');
 function frame(now) {
   requestAnimationFrame(frame);
   const el = Math.min(0.1, (now - last) / 1000); last = now;
+  pollPads(el);
+  if (!running) padInfo();
   if ((running && !paused) || demo) {
     acc += el * SPEED;
     const inp = demo ? {} : readInputs();

@@ -272,8 +272,8 @@ function newMatch(homeDef, awayDef, opts) {
 }
 
 function addHuman(team, src) {
-  const h = { team, src, player: null, prevFire: false, charging: false, fireT: 0,
-    inp: { dx: 0, dy: 0, fire: false, pressed: false, released: false } };
+  const h = { team, src, player: null, prev: {}, charging: false, fireT: 0, energy: 1, tired: false, tackleCD: 0,
+    queue: null, lockT: 0, shotT: 0, shotPw: 0, shotLow: false, inp: { dx: 0, dy: 0, held: {}, down: {} } };
   team.human = h; G.humans.push(h);
 }
 
@@ -718,8 +718,10 @@ function gkDistribute(p) {
   const c = bestPass(p);
   const shortP = longGame ? 0.1 : s.safe > 1.2 ? 0.9 : 0.5;   // positional teams play out from the back
   if (c && !c.blocked && c.d < 160 && Math.random() < shortP) { passTo(p, c.mate, false); return; }
-  if (longGame) { const fw = t.players.filter(m => m.role === 'FW'); passTo(p, fw[Math.floor(Math.random() * fw.length)], true); return; }
-  const mates = p.team.players.filter(m => m.role === 'FW' || m.role === 'MF');
+  const fw = t.players.filter(m => m.role === 'FW');
+  if (longGame && fw.length) { passTo(p, fw[Math.floor(Math.random() * fw.length)], true); return; }
+  let mates = t.players.filter(m => m.role === 'FW' || m.role === 'MF');
+  if (!mates.length) mates = t.players.filter(m => m !== p);   // (everyone up front has been sent off)
   passTo(p, mates[Math.floor(Math.random() * mates.length)], true);
 }
 
@@ -760,56 +762,120 @@ function startSlide(p) {
   emit('slide');
 }
 
+// ---------- human control ----------
+// Buttons, in the FIFA layout (PlayStation / Xbox):
+//   with the ball   pass = low pass (Cross/A), thru = through ball (Triangle/Y), lob = lob pass or cross (Square/X),
+//                   shoot = shot, hold for power, double tap for a low one (Circle/B)
+//   without it      hold pass = jockey (contain), shoot = standing tackle, lob = slide tackle, thru = keeper rushes out,
+//                   sw = switch player (L1/LB), hold press = a team-mate presses too (R1/RB)
+//   always          sprint (R2/RT); any kick button with the ball in the air nearby = header (pass/thru = headed pass)
+const BUTTONS = ['pass', 'thru', 'shoot', 'lob', 'sw', 'press', 'sprint'];
+const KICKS = ['pass', 'thru', 'lob', 'shoot'];
+const SPRINT_DRAIN = 0.3, SPRINT_GAIN = 0.16;   // a full tank lasts ~3 s of sprinting, refills in ~6 s
+const SHOT_WINDUP = 0.16;   // the shot goes this long after the button is let go: a second tap in that time keeps it low
+
 function humanControl(h, p, dt) {
-  const b = G.ball, i = h.inp;
+  const b = G.ball, i = h.inp, dn = i.down;
   const sp = G.state === 'setpiece' ? G.sp : null;
   const isTaker = sp && sp.taker === p;
   const aftertouching = b.after && b.after.h === h;
+  const hasBall = b.owner === p;
   const mag = aftertouching ? 0 : Math.hypot(i.dx, i.dy);
-  if (mag <= 0.3 && !b.owner && b.target === p && G.state === 'play') {
+  h.tackleCD = Math.max(0, h.tackleCD - dt);
+  // sprint while the legs last; once empty, jog until they've partly recovered
+  const sprinting = i.held.sprint && mag > 0.3 && !h.tired && !isTaker;
+  h.energy = clamp(h.energy + (sprinting ? -SPRINT_DRAIN : SPRINT_GAIN) * dt, 0, 1);
+  if (h.energy <= 0) h.tired = true; else if (h.energy > 0.35) h.tired = false;
+  const o = b.owner;
+  const contain = i.held.pass && o && o.team !== p.team && o.role !== 'GK' && G.state === 'play' && p.stun <= 0;
+  if (contain) {   // jockey: stay goal-side of the carrier, close enough to nick it
+    const [ux, uy] = norm(W / 2 - o.x, ownGoalY(p.team) - o.y);
+    moveTo(p, o.x + o.vx * 0.25 + ux * 9, o.y + o.vy * 0.25 + uy * 9, sprinting ? 1.04 : 0.9);
+  } else if (mag <= 0.3 && !b.owner && b.target === p && G.state === 'play') {
     const ip = interceptPoint(p); moveTo(p, ip.x, ip.y, 1);
   } else if (mag > 0.3) {
     let [ux, uy] = norm(i.dx, i.dy);
     if (isTaker && sp.type === 'throw' && ux * (sp.x <= 0 ? 1 : -1) < 0.3) { ux = p.fx; uy = p.fy; }
     p.fx = ux; p.fy = uy;
-    if (!isTaker) { const s = pace(p) * (b.owner === p ? 0.92 : 1) * (p.stun > 0 ? 0.3 : 1); p.vx = ux * s; p.vy = uy * s; }
+    const k = hasBall ? (sprinting ? 0.97 : 0.86) : (sprinting ? 1.06 : 0.92);
+    if (!isTaker) { const s = pace(p) * k * (p.stun > 0 ? 0.3 : 1); p.vx = ux * s; p.vy = uy * s; }
   } else { p.vx *= 0.75; p.vy *= 0.75; }
   if (isTaker) { p.vx = p.vy = 0; const tp = takerSpot(sp, p.fx, p.fy); p.x = tp.x; p.y = tp.y; }
 
-  const hasBall = b.owner === p;
-  if (i.pressed) {
-    if (hasBall) { h.charging = true; h.fireT = 0; }
-    else if (!isTaker) { h.charging = false; tryHeaderOrSlide(p); }
+  if (h.shotT) {   // winding up to shoot: a second tap makes it a low drive
+    if (!hasBall) { h.shotT = 0; return; }
+    if (dn.shoot) h.shotLow = true;
+    if (G.clock >= h.shotT) { h.shotT = 0; humanShot(h, p, h.shotPw, h.shotLow); }
+    return;
+  }
+  let act = KICKS.find(k => dn[k]) || null;
+  if (act && !hasBall) {
+    if (!b.owner && b.z > 5 && dist(p, b) < 18) { p.jump = 0.35; p._headK = act === 'pass' || act === 'thru' ? 'pass' : 'shot'; }
+    else if (!b.owner && b.target === p) h.queue = { k: act, t: G.clock + 1.2 };   // played first time when it arrives
+    else if (!isTaker && G.state === 'play' && p.stun <= 0) {
+      if (act === 'lob') startSlide(p);
+      else if (act === 'shoot') standTackle(h, p);
+    }
+    act = null;
+  }
+  if (hasBall && !act && h.queue) { if (G.clock < h.queue.t) act = h.queue.k; h.queue = null; }
+  if (hasBall && act && isTaker && (sp.t < 0.35 || cardBusy())) { h.queue = { k: act, t: G.clock + 1.5 }; act = null; }   // not ready yet
+  if (hasBall && act) {
+    h.queue = null;
+    const throwIn = isTaker && sp.type === 'throw';
+    if (act === 'shoot') { h.charging = true; h.fireT = i.held.shoot ? 0 : TAP_TIME + (CHARGE_TIME - TAP_TIME) * 0.45; }
+    else {
+      h.charging = false;
+      if (act === 'pass') humanPass(p, throwIn); else if (act === 'thru') humanThrough(p, throwIn); else humanLob(p, throwIn);
+      if (b.owner === null && b.lastTouch === p) b.after = { h, p, t: AFTERTOUCH_TIME, kx: p.fx, ky: p.fy };
+      return;
+    }
   }
   if (!h.charging) return;
   if (!hasBall) { h.charging = false; return; }
   h.fireT += dt;
-  if (!(i.released || h.fireT >= CHARGE_TIME)) return;
+  if (i.held.shoot && h.fireT < CHARGE_TIME) return;
   h.charging = false;
-  if (isTaker && (sp.t < 0.35 || cardBusy())) return;
-  const throwIn = isTaker && sp.type === 'throw';
-  const lofted = isTaker && sp.type === 'corner';
-  if (h.fireT < TAP_TIME) humanPass(p, throwIn);
-  else {
-    const pw = clamp((h.fireT - TAP_TIME) / (CHARGE_TIME - TAP_TIME), 0, 1);
-    if (throwIn) throwBall(p, p.fx, p.fy, 150 + pw * 70, 40 + pw * 40);   // long throw
-    else if (lofted) kick(p, p.fx, p.fy, 150 + pw * 80, 90 + pw * 70);
-    else { kick(p, p.fx, p.fy, 230 + pw * 130, 18 + pw * 50); noteShot(p); }
-  }
+  const pw = clamp((h.fireT - TAP_TIME) / (CHARGE_TIME - TAP_TIME), 0, 1);
+  if (isTaker && sp.type === 'throw') throwBall(p, p.fx, p.fy, 150 + pw * 70, 40 + pw * 40);   // long throw
+  else if (isTaker && sp.type === 'corner') kick(p, p.fx, p.fy, 150 + pw * 80, 90 + pw * 70);
+  else { h.shotT = G.clock + SHOT_WINDUP; h.shotPw = pw; h.shotLow = false; return; }
   if (b.owner === null && b.lastTouch === p) b.after = { h, p, t: AFTERTOUCH_TIME, kx: p.fx, ky: p.fy };
+}
+// A normal shot is struck to arrive at mid height (about half the goal), rising with power until full power
+// flies over the bar. A double-tapped one is driven low and skims along the ground.
+function humanShot(h, p, pw, low) {
+  const b = G.ball, gy = oppGoalY(p.team), [ux, uy] = [p.fx, p.fy];
+  const spd = (low ? 260 : 230) + pw * (low ? 110 : 130);
+  let vz;
+  if (low) vz = 4 + pw * 6;
+  else {
+    const hgt = 8 + pw * 9 + Math.max(0, pw - 0.8) / 0.2 * 16 + rand(-2, 2) * (1.3 - p.st.shooting / 100);
+    const D = clamp(Math.abs(uy) > 0.2 ? Math.abs(gy - p.y) / Math.abs(uy) : 150, 30, 260);
+    const tt = D / spd * (1 + AIR_FRICTION * D / spd / 2);   // flight time, allowing for air drag
+    vz = clamp((hgt + GRAV / 2 * tt * (tt + DT)) / tt, 10, 260);   // (the + DT: the step integrates gravity first)
+  }
+  kick(p, ux, uy, spd, vz); noteShot(p);
+  if (b.owner === null && b.lastTouch === p) b.after = { h, p, t: AFTERTOUCH_TIME, kx: ux, ky: uy };
+}
+
+// the team-mate the player is aiming at: inside a cone around (fx, fy), best by score(m, d, dot)
+function aimMate(p, fx, fy, cone, minD, maxD, score) {
+  let best = null, bs = -1e9;
+  for (const m of p.team.players) {
+    if (m === p || m.role === 'GK' || m.state === 'down') continue;
+    const dx = m.x - p.x, dy = m.y - p.y, d = Math.hypot(dx, dy);
+    if (d < minD || d > maxD) continue;
+    const dot = (dx * fx + dy * fy) / d;
+    if (dot < cone) continue;
+    const s = score(m, d, dot);
+    if (s > bs) { bs = s; best = m; }
+  }
+  return best;
 }
 
 function humanPass(p, throwIn) {
-  let best = null, bs = -1e9;
-  for (const m of p.team.players) {
-    if (m === p) continue;
-    const dx = m.x - p.x, dy = m.y - p.y, d = Math.hypot(dx, dy);
-    if (d < 14 || d > 260) continue;
-    const dot = (dx * p.fx + dy * p.fy) / d;
-    if (dot < G.diff.passCone) continue;
-    const s = dot * 120 - d * 0.25;
-    if (s > bs) { bs = s; best = m; }
-  }
+  const best = aimMate(p, p.fx, p.fy, G.diff.passCone, 14, 260, (m, d, dot) => dot * 120 - d * 0.25);
   if (throwIn) { if (best) throwTo(p, best); else throwBall(p, p.fx, p.fy, 140, 40); return; }
   if (best) {
     const tx = best.x + best.vx * 0.4, ty = best.y + best.vy * 0.4;
@@ -819,11 +885,76 @@ function humanPass(p, throwIn) {
   } else kick(p, p.fx, p.fy, 200, 0);
 }
 
-function tryHeaderOrSlide(p) {
-  const b = G.ball;
-  if (!b.owner && b.z > 5 && dist(p, b) < 18) { p.jump = 0.35; return; }
-  if (p.stun > 0 || G.state !== 'play') return;
-  startSlide(p);
+// through ball: along the ground into the space in front of a team-mate, so he runs onto it
+function humanThrough(p, throwIn) {
+  const t = p.team, gy = oppGoalY(t);
+  const best = aimMate(p, p.fx, p.fy, G.diff.passCone - 0.15, 20, 300,
+    (m, d, dot) => dot * 120 - d * 0.15 + (m.y - p.y) * t.dir * 0.3 + (m._run ? 20 : 0));
+  if (!best) { if (throwIn) throwBall(p, p.fx, p.fy, 160, 40); else kick(p, p.fx, p.fy, 230, 0); return; }
+  let [rx, ry] = norm(W / 2 - best.x, gy - best.y);   // toward goal, or the way he's already running
+  if (Math.hypot(best.vx, best.vy) > 25) { const [vx, vy] = norm(best.vx, best.vy); [rx, ry] = norm(vx + rx * 0.6, vy + ry * 0.6); }
+  const lead = clamp(25 + dist(p, best) * 0.2, 30, 70);
+  const tx = clamp(best.x + rx * lead, 10, W - 10), ty = clamp(best.y + ry * lead, 10, L - 10);
+  const d = Math.hypot(tx - p.x, ty - p.y), [ux, uy] = norm(tx - p.x, ty - p.y);
+  if (throwIn) { throwBall(p, ux, uy, clamp(d * 0.95 + 10, 60, 190), 28); G.ball.target = best; return; }
+  kick(p, ux, uy, passSpeed(d) * 0.92, 0);
+  notePass(p, best, false);
+}
+
+// lob / cross: in the air to a team-mate; from out wide near goal it looks for heads in the box
+function humanLob(p, throwIn) {
+  const t = p.team, gy = oppGoalY(t), wide = Math.abs(p.x - W / 2) > W * 0.25 && Math.abs(gy - p.y) < 200;
+  const best = aimMate(p, p.fx, p.fy, G.diff.passCone - 0.25, 40, 330, (m, d, dot) => {
+    const inBox = Math.abs(m.x - W / 2) < BOX_W / 2 && Math.abs(gy - m.y) < BOX_D + 20;
+    return dot * 120 - Math.abs(d - 140) * 0.15 + (wide && inBox ? 60 : 0);
+  });
+  let tx, ty;
+  if (best) { tx = best.x + best.vx * 0.5; ty = best.y + best.vy * 0.5; }
+  else if (wide && p.fy * t.dir > -0.2) { tx = W / 2; ty = gy - t.dir * 60; }   // nobody there: whip it toward the penalty spot
+  else { tx = p.x + p.fx * 150; ty = p.y + p.fy * 150; }
+  const d = Math.hypot(tx - p.x, ty - p.y), [ux, uy] = norm(tx - p.x, ty - p.y);
+  if (throwIn) { throwBall(p, ux, uy, clamp(d * 1.05 + 20, 100, 220), 45); if (best) G.ball.target = best; return; }
+  const vh = 130 + d * 0.4;
+  kick(p, ux, uy, vh, GRAV * (d / vh) / 2);
+  if (best) notePass(p, best, true);
+  if (wide && Math.abs(gy - ty) < 130) ST(t, 'crosses');
+}
+
+// standing tackle: a quick poke at the ball. Clean from the front or side, a foul through the back, beaten if it misses
+function standTackle(h, p) {
+  if (h.tackleCD > 0) return;
+  h.tackleCD = 0.55;
+  const b = G.ball, o = b.owner, d = dist(p, b);
+  const [ux, uy] = norm(b.x - p.x, b.y - p.y);
+  p.fx = ux; p.fy = uy; p.kickAnim = 0.2;
+  p.vx = ux * p.speed * 1.3; p.vy = uy * p.speed * 1.3;   // the lunge
+  if (!o || o.team === p.team || o.role === 'GK' || d > 13) return;
+  const [mx, my] = Math.hypot(o.vx, o.vy) > 10 ? norm(o.vx, o.vy) : [o.fx, o.fy];
+  if (((o.x - p.x) * mx + (o.y - p.y) * my) / (dist(o, p) || 1) > 0.5 && Math.random() < 0.6) {
+    o.state = 'down'; o.stateT = 0.8; b.owner = null; b.vx = o.vx * 0.4; b.vy = o.vy * 0.4; b.stealCD = 0.7;
+    emit('foul'); foulCommitted(p, o, { behind: true, hadBall: true }); return;
+  }
+  const drib = (o.st.pace + o.st.passing) / 2;
+  if (Math.random() < clamp((0.5 + (p.st.tackling - drib) / 120) * Math.sqrt(G.diff.humanSteal), 0.2, 0.9)) {
+    if (G.offside && G.offside.team !== p.team) G.offside = null;
+    b.owner = p; b.lastTouch = p; b.stealCD = 0.7; b.target = null; o.stun = 0.4;
+    emit('tackle');
+  } else { p.stun = 0.4; b.stealCD = Math.max(b.stealCD, 0.4); }   // he's skipped past
+}
+
+// L1: hand control to the best-placed team-mate. Pressing again straight away moves on to the next one.
+function manualSwitch(h) {
+  const t = h.team, b = G.ball, [ux, uy] = norm(W / 2 - b.x, ownGoalY(t) - b.y);
+  if (G.clock - (h.swT || -9) > 1.2) h.swSkip = new Set();
+  h.swSkip.add(h.player);
+  let best = null, bd = 1e9;
+  for (const q of t.players) {
+    if (q.role === 'GK' || q.state === 'down' || h.swSkip.has(q)) continue;
+    const d = Math.hypot(q.x - b.x, q.y - b.y) + (((q.x - b.x) * ux + (q.y - b.y) * uy) < -5 ? 30 : 0);   // behind the ball counts for less
+    if (d < bd) { bd = d; best = q; }
+  }
+  if (!best) { h.swSkip = new Set(); return; }
+  h.player = best; h.charging = false; h.queue = null; h.swT = G.clock; h.lockT = G.clock + 1.5;
 }
 
 function updateControl(h) {
@@ -835,6 +966,8 @@ function updateControl(h) {
     if (h.player !== b.target) { h.player = b.target; h.charging = false; }
     return;
   }
+  if (h.inp.down.sw && G.state !== 'goal') { manualSwitch(h); return; }
+  if (G.clock < h.lockT && h.player && h.player.state !== 'down') return;   // just switched by hand: no auto-switch for a moment
   let pt = b.owner ? { x: b.x, y: b.y } : predictBall(0.35), cost;
   if (b.owner && G.diff.smartSwitch) {
     const [ux, uy] = norm(W / 2 - b.x, ownGoalY(t) - b.y);
@@ -870,9 +1003,10 @@ function computeRoles() {
       const hd = dist(hp, b), cd = arr.find(a => a.p !== hp);
       if (hd < 50 || !cd || hd < cd.d * 1.3) t.chaser = hp;
     }
-    if (b.owner && t.human && G.diff.teamPress) {
+    const callPress = t.human && t.human.inp.held.press;   // R1: a team-mate goes and presses too
+    if (b.owner && t.human && (G.diff.teamPress || callPress)) {
       const hp = arr.find(a => a.p !== t.human.player);
-      if (hp && hp.d < 110) t.helper = hp.p;
+      if (hp && hp.d < (callPress ? 170 : 110)) t.helper = hp.p;
     }
     // how hard to press: by where the ball is, and in the seconds after losing it
     const cp = G.clock - t.lostT < s.cpressT * fat;
@@ -1077,6 +1211,8 @@ function gkAI(p, dt) {
     }
   }
   p.threat = false;
+  // Triangle on defence: the keeper charges out at the man on the ball
+  if (t.human && t.human.inp.held.thru && st === 'play' && b.owner && b.owner.team !== t && Math.hypot(b.x - gx, b.y - gy) < 170) { moveTo(p, b.x, b.y, 1); return; }
   if (!b.owner && inOwnBox(t, b.x, b.y) && b.z < 20) {
     const opp = nearestTo(t.opp.players, b);
     if (dist(p, b) < dist(opp, b) * 0.9 + 4) { const pt = predictBall(0.3); moveTo(p, pt.x, pt.y, 1); return; }
@@ -1189,11 +1325,16 @@ function contact() {
     if (from && from !== best && from.team === best.team) received(best, from);
   } else {
     const h = best.team.human; let dx, dy;
+    let hSpd = rand(160, 200);
     if (h && h.player === best) {
       if (Math.hypot(h.inp.dx, h.inp.dy) > 0.3) [dx, dy] = norm(h.inp.dx, h.inp.dy); else { dx = best.fx; dy = best.fy; }
+      const m = best._headK === 'pass' ? aimMate(best, dx, dy, 0.5, 20, 200, (q, d, dot) => dot * 100 - d * 0.3) : null;
+      if (m) { [dx, dy] = norm(m.x - best.x, m.y - best.y); hSpd = clamp(dist(m, best) * 1.1 + 50, 90, 190); }
+      else if (best._headK === 'pass') hSpd = 130;
     } else { [dx, dy] = aiHeaderDir(best); [dx, dy] = rot(dx, dy, (sty(best.team).headErr - 1) * 0.3 * rand(-1, 1)); }
     const hs = sty(best.team), atGoal = Math.hypot(W / 2 - best.x, oppGoalY(best.team) - best.y) < 140;
-    kick(best, dx, dy, rand(160, 200) * hs.headPow, rand(25, 50));
+    kick(best, dx, dy, hSpd * hs.headPow, rand(25, 50));
+    best._headK = null;
     best.headCD = 0.6; best.jump = 0.25; emit('header');
     ST(best.team, 'headers');
     if (atGoal && dy * best.team.dir > 0.5) ST(best.team, 'headShots');
@@ -1675,9 +1816,10 @@ function step(inputs) {
   if (G.state === 'play' || G.state === 'setpiece' || G.state === 'out') G.time += dt;   // stoppages for fouls don't run the clock
   if (G.state === 'setpiece') G.sp.t += dt;
   for (const h of G.humans) {
-    const i = (inputs && inputs[h.src]) || { dx: 0, dy: 0, fire: false };
-    h.inp = { dx: i.dx, dy: i.dy, fire: i.fire, pressed: i.fire && !h.prevFire, released: !i.fire && h.prevFire };
-    h.prevFire = i.fire;
+    const i = (inputs && inputs[h.src]) || {}, held = {}, down = {};
+    for (const k of BUTTONS) { held[k] = !!i[k]; down[k] = held[k] && !h.prev[k]; }
+    h.prev = held;
+    h.inp = { dx: i.dx || 0, dy: i.dy || 0, held, down };
     updateControl(h);
   }
   computeRoles();

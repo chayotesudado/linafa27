@@ -7,19 +7,34 @@ Top-down arcade football in the browser. No build step and no dependencies.
 To play locally, open `index.html` in a browser (`xdg-open index.html`).
 
 ## Controls
-| | Player 1 | Player 2 |
-|---|---|---|
-| Move | Arrow keys | WASD |
-| Fire | Space | Left Shift |
+Controller first, with the FIFA button layout. Pad 1 plays for P1 and pad 2 for P2. The keyboard counts as one more controller: it plays for P2 when one pad is plugged in, and for P1 when none are.
 
-Gamepads work too (pad 1 → P1, pad 2 → P2).
+| | PlayStation | Xbox | Keyboard |
+|---|---|---|---|
+| Move | left stick / d-pad | left stick / d-pad | WASD (or arrows) |
+| Pass (low) | ✕ | A | K |
+| Through ball | △ | Y | I |
+| Lob pass / cross | □ | X | J |
+| Shoot (hold for power, double tap = low) | ○ | B | L |
+| Sprint | R2 | RT | Left Shift / Space |
+| **Defending** | | | |
+| Jockey (hold) | ✕ | A | K |
+| Standing tackle | ○ | B | L |
+| Slide tackle | □ | X | J |
+| Switch player | L1 | LB | Q |
+| Team-mate presses too (hold) | R1 | RB | E |
+| Keeper rushes out (hold) | △ | Y | I |
+| Pause / quit (when paused) | Options / Share | Start / Back | Esc / Q |
 
-- **With the ball:** tap fire to pass (it auto-targets a teammate in the direction you face). Hold fire to shoot; the longer you hold, the harder the shot.
+- **Headers:** with the ball in the air nearby, ✕ or △ heads it to a team-mate and ○ or □ heads it where you aim.
+- **First time:** press pass, through ball, lob or shoot while a pass is on its way to you and the ball is played the moment it arrives.
+- **Shooting:** a normal shot goes in at about mid height and rises with power; hold too long and it flies over the bar. Double tap for a low drive along the ground.
+- **Sprint** runs down the bar over your player. Once it's empty you jog until it has partly refilled.
 - **Aftertouch:** for half a second after any kick, push sideways to bend the ball, back to lift it (chips, crosses), or forward to keep it low.
-- **Without the ball:** fire = slide tackle. If the ball is in the air nearby, fire = jump for a header.
-- Control switches automatically to the teammate nearest the ball.
+- Control still switches automatically to the team-mate nearest the ball. After a manual switch it waits a moment. Press L1 again to move on to the next man.
+- The menu works with a pad too: d-pad/stick up and down to move, left and right to change an option, ✕/A or Start to kick off.
 - The menu plays an 8-bit samba. It starts straight away if the browser allows autoplay; otherwise on the first click or key press anywhere (the menu shows a hint until then).
-- Esc pauses, M mutes (in the menu too), C toggles the CRT scanline filter, ` (backtick) shows the frame rate.
+- Esc (or Start) pauses, M mutes (in the menu too), C toggles the CRT scanline filter, ` (backtick) shows the frame rate.
 
 The game runs at 80% of real time (`SPEED` in `game.js`).
 

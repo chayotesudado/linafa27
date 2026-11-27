@@ -419,7 +419,7 @@ function drawPlayer(g, p, X, Y, G, clock) {
       if (p.stun > 0 && spd > 8) pose = 'stumble';
       if (gk && p._catchT > clock) { pose = 'catch'; f = p._catchT - clock > 0.2 ? 1 : 0; }
       if (gk && p._saveT > clock) pose = p._saveHigh ? 'punch' : 'parry';
-      if (G.humans.some(h => h.player === p && h.charging)) pose = 'windup';
+      if (G.humans.some(h => h.player === p && (h.charging || h.shotT))) pose = 'windup';
       if (p.kickAnim > 0) {
         if (p._lastPose === 'throw') p._throwRel = true;
         f = p.kickAnim > 0.13 ? 0 : p.kickAnim > 0.06 ? 1 : 2;
@@ -926,6 +926,9 @@ function draw(ctx, G, humanColors) {
       const w = Math.round(clamp(h.fireT / S.CHARGE_TIME, 0, 1) * 26);
       ctx.fillStyle = '#14101c'; ctx.fillRect(X - 15, Y - 10, 30, 6);
       for (let i = 0; i < w; i++) { ctx.fillStyle = CYCLE[Math.min(6, Math.floor(i / 26 * 3))]; ctx.fillRect(X - 13 + i, Y - 9, 1, 4); }
+    } else if (h.energy < 0.995) {   // sprint legs left (red while they recover from empty)
+      ctx.fillStyle = '#14101c'; ctx.fillRect(X - 8, Y - 7, 17, 4);
+      ctx.fillStyle = h.tired ? '#ff5a3a' : '#7dff7a'; ctx.fillRect(X - 7, Y - 6, Math.round(h.energy * 15), 2);
     }
   }
   // fade to black as the teams go in at half time, and back up for the second-half kick-off
