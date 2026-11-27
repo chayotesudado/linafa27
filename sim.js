@@ -864,6 +864,12 @@ function computeRoles() {
       const mk = t.players.find(q => q._mark === b.owner && q.state === 'ok');
       if (mk && dist(mk, b) < 70) t.chaser = mk;
     }
+    // a human already closing the carrier down IS the presser: team-mates don't pile in on the same man
+    const hp = t.human && t.human.player;
+    if (b.owner && hp && hp.state === 'ok' && hp.role !== 'GK') {
+      const hd = dist(hp, b), cd = arr.find(a => a.p !== hp);
+      if (hd < 50 || !cd || hd < cd.d * 1.3) t.chaser = hp;
+    }
     if (b.owner && t.human && G.diff.teamPress) {
       const hp = arr.find(a => a.p !== t.human.player);
       if (hp && hp.d < 110) t.helper = hp.p;
