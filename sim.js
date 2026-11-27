@@ -239,7 +239,7 @@ function makeTeam(def, dir) {
       speed: 55 + r.st.pace * 0.28,
       x: W / 2, y: L / 2, vx: 0, vy: 0, fx: 0, fy: dir,
       state: 'ok', stateT: 0, stun: 0, headCD: 0, think: 0, anim: 0, jump: 0, kickAnim: 0,
-      holdT: 0, missCD: 0, reactT: 0, threat: false, slideWon: false, boostT: 0, boost: 1,
+      holdT: 0, missCD: 0, reactT: 0, threat: false, slideWon: false, boostT: 0, boost: 1, energy: 1, tired: false, sprintT: -1,
       skin: SKINS[h % SKINS.length], hair: HAIRS[(h >>> 5) % HAIRS.length],
     });
   }
@@ -272,7 +272,7 @@ function newMatch(homeDef, awayDef, opts) {
 }
 
 function addHuman(team, src) {
-  const h = { team, src, player: null, prev: {}, charging: false, fireT: 0, energy: 1, tired: false, tackleCD: 0,
+  const h = { team, src, player: null, prev: {}, charging: false, fireT: 0, tackleCD: 0,
     queue: null, lockT: 0, shotT: 0, shotPw: 0, shotLow: false, inp: { dx: 0, dy: 0, held: {}, down: {} } };
   team.human = h; G.humans.push(h);
 }
@@ -771,7 +771,7 @@ function startSlide(p) {
 //   always          sprint (R2/RT); any kick button with the ball in the air nearby = header (pass/thru = headed pass)
 const BUTTONS = ['pass', 'thru', 'shoot', 'lob', 'sw', 'press', 'sprint'];
 const KICKS = ['pass', 'thru', 'lob', 'shoot'];
-const SPRINT_DRAIN = 0.3, SPRINT_GAIN = 0.16;   // a full tank lasts ~3 s of sprinting, refills in ~6 s
+const SPRINT_DRAIN = 0.3, SPRINT_GAIN = 0.16;   // each player's legs: ~3 s of sprinting when fresh, ~6 s to refill
 const SHOT_WINDUP = 0.16;   // the shot goes this long after the button is let go: a second tap in that time keeps it low
 
 function humanControl(h, p, dt) {
@@ -783,9 +783,8 @@ function humanControl(h, p, dt) {
   const mag = aftertouching ? 0 : Math.hypot(i.dx, i.dy);
   h.tackleCD = Math.max(0, h.tackleCD - dt);
   // sprint while the legs last; once empty, jog until they've partly recovered
-  const sprinting = i.held.sprint && mag > 0.3 && !h.tired && !isTaker;
-  h.energy = clamp(h.energy + (sprinting ? -SPRINT_DRAIN : SPRINT_GAIN) * dt, 0, 1);
-  if (h.energy <= 0) h.tired = true; else if (h.energy > 0.35) h.tired = false;
+  const sprinting = i.held.sprint && mag > 0.3 && !p.tired && !isTaker;
+  if (sprinting) { p.energy = Math.max(0, p.energy - SPRINT_DRAIN * dt); p.sprintT = G.clock; if (p.energy <= 0) p.tired = true; }   // (recovery: updatePlayer)
   const o = b.owner;
   const contain = i.held.pass && o && o.team !== p.team && o.role !== 'GK' && G.state === 'play' && p.stun <= 0;
   if (contain) {   // jockey: stay goal-side of the carrier, close enough to nick it
@@ -1406,6 +1405,9 @@ function updatePlayer(p, dt) {
   p.x = clamp(p.x + p.vx * dt, -15, W + 15);
   p.y = clamp(p.y + p.vy * dt, -15, L + 15);
   p.anim += Math.hypot(p.vx, p.vy) * dt;
+  if (p.sprintT !== G.clock && p.energy < 1) {   // every player's legs recover while he isn't sprinting
+    p.energy = Math.min(1, p.energy + SPRINT_GAIN * dt); if (p.energy > 0.35) p.tired = false;
+  }
 }
 
 // ---------- ball ----------
